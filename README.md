@@ -61,7 +61,7 @@ How it works: the scriptlet writes a timestamp to `/tmp/paperless.autostart` bef
 
 ### Getting back to the list
 
-While reading, go back to KOReader's file browser the usual way (top menu → file-browser/home icon, or a gesture you've assigned to it). Paperless reopens on the list you came from. It reloads the list from the server, so Wi-Fi needs to be on. Disable this with *Settings → Return to the list after closing a document*.
+While reading, tap the top of the screen and use the **File browser** button, which sits after the Search magnifier and before the ☰ menu. It closes the document, and Paperless reopens on the list you came from. For one tap, assign a gesture: gear tab → **Taps and gestures** → **Gesture manager** → pick a gesture → **General** → **File browser**. It reloads the list from the server, so Wi-Fi needs to be on. Disable this with *Settings → Return to the list after closing a document*.
 
 ### Quick access
 
