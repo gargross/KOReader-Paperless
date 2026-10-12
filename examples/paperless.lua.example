@@ -1,0 +1,9 @@
+-- KOReader Paperless-ngx plugin settings.
+-- Replace the three PASTE_ values (keep the quotes), then copy this file to
+-- Internal Storage\koreader\settings\paperless.lua with KOReader closed.
+return {
+    ["server_url"] = "https://paperless.example.com",
+    ["token"] = "PASTE_PAPERLESS_API_TOKEN",
+    ["cf_client_id"] = "PASTE_CLIENT_ID.access",
+    ["cf_client_secret"] = "PASTE_CLIENT_SECRET",
+}
