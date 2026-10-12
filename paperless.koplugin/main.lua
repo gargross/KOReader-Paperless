@@ -43,6 +43,28 @@ local TLS = dofile(PLUGIN_DIR .. "/tls.lua")
 local BUNDLED_CA = PLUGIN_DIR .. "/cacert.pem"
 
 local DEFAULT_PAGE_SIZE = 50
+local MAX_RESTORE_DOCS = 300
+
+-- Module-level, so it survives KOReader switching between the reader and the
+-- file manager (plugin modules are loaded once; instances are recreated per UI).
+-- Holds where a document was opened from, so that list can be reopened when
+-- the user leaves that document.
+local session = { pending = nil }
+
+local function samePath(a, b)
+    if not a or not b then
+        return false
+    end
+    if a == b then
+        return true
+    end
+    local ok, ffiutil = pcall(require, "ffi/util")
+    if ok and ffiutil.realpath then
+        local ra, rb = ffiutil.realpath(a), ffiutil.realpath(b)
+        return ra ~= nil and ra == rb
+    end
+    return false
+end
 -- Keep list responses small: never request the (large) OCR "content" field.
 local DOC_FIELDS = "id,title,created,added,page_count,original_file_name,tags"
 
@@ -60,6 +82,36 @@ function Paperless:init()
     self.menus = {}
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
+    -- Back in the file manager after reading a document opened from Paperless:
+    -- reopen the list it came from.
+    if not self.ui.document and session.pending then
+        local pending = session.pending
+        session.pending = nil
+        local lastfile = G_reader_settings:readSetting("lastfile")
+        if self:get("return_to_list", true) and samePath(lastfile, pending.path) then
+            UIManager:nextTick(function()
+                self:restoreLocation(pending)
+            end)
+        end
+    end
+end
+
+function Paperless:restoreLocation(loc)
+    self:showHome()
+    if loc.kind == "docs" then
+        self:showDocumentList(loc.title, loc.params, { count = loc.count, focus = loc.focus })
+    elseif loc.kind == "downloaded" then
+        self:showDownloaded(loc.focus)
+    end
+end
+
+local function itemIndex(menu, item)
+    for i, it in ipairs(menu.item_table or {}) do
+        if it == item then
+            return i
+        end
+    end
+    return 1
 end
 
 function Paperless:onDispatcherRegisterActions()
@@ -451,7 +503,7 @@ function Paperless:docItem(doc)
     return { text = title, mandatory = mark .. created, doc = doc }
 end
 
-function Paperless:showDocumentList(title, params)
+function Paperless:showDocumentList(title, params, restore)
     NetworkMgr:runWhenConnected(function()
         local data, err = self:fetchDocuments(params, 1)
         if not data then
@@ -464,6 +516,20 @@ function Paperless:showDocumentList(title, params)
             return
         end
         local state = { page = 1, loaded = #docs, total = tonumber(data.count) or #docs }
+        -- When returning from a document, load as many pages as were loaded before.
+        local want = restore and math.min(tonumber(restore.count) or 0, MAX_RESTORE_DOCS) or 0
+        while state.loaded < want and state.loaded < state.total do
+            local more = self:fetchDocuments(params, state.page + 1)
+            local more_docs = more and more.results or {}
+            if #more_docs == 0 then
+                break
+            end
+            for _, d in ipairs(more_docs) do
+                docs[#docs + 1] = d
+            end
+            state.page = state.page + 1
+            state.loaded = state.loaded + #more_docs
+        end
         local menu_title = title .. " (" .. state.total .. ")"
         local function moreItem()
             return { text = T(_("Load more… (%1 left)"), state.total - state.loaded), is_more = true }
@@ -475,20 +541,27 @@ function Paperless:showDocumentList(title, params)
         if state.loaded < state.total then
             items[#items + 1] = moreItem()
         end
-        self:showMenu(menu_title, items, {
+        local function returnInfo(menu, item)
+            return { kind = "docs", title = title, params = params,
+                     count = state.loaded, focus = itemIndex(menu, item) }
+        end
+        local list_menu = self:showMenu(menu_title, items, {
             select = function(menu, item)
                 if item.is_more then
                     self:loadMore(menu, menu_title, params, state, moreItem)
                 elseif item.doc then
-                    self:openDocument(item.doc)
+                    self:openDocument(item.doc, returnInfo(menu, item))
                 end
             end,
             hold = function(menu, item)
                 if item.doc then
-                    self:showDocActions(item.doc, menu)
+                    self:showDocActions(item.doc, menu, returnInfo(menu, item))
                 end
             end,
         })
+        if restore and restore.focus and restore.focus > 1 then
+            list_menu:switchItemTable(nil, items, math.min(restore.focus, #items))
+        end
     end)
 end
 
@@ -631,7 +704,13 @@ function Paperless:downloadDocument(doc, on_done)
     end)
 end
 
-function Paperless:openFile(path)
+function Paperless:openFile(path, return_info)
+    if return_info then
+        return_info.path = path
+        session.pending = return_info
+    else
+        session.pending = nil
+    end
     self:closeAllMenus()
     UIManager:nextTick(function()
         if self.ui.document then
@@ -642,18 +721,18 @@ function Paperless:openFile(path)
     end)
 end
 
-function Paperless:openDocument(doc)
+function Paperless:openDocument(doc, return_info)
     local path = self:localPath(doc.id)
     if path then
-        self:openFile(path)
+        self:openFile(path, return_info)
         return
     end
     self:downloadDocument(doc, function(downloaded)
-        self:openFile(downloaded)
+        self:openFile(downloaded, return_info)
     end)
 end
 
-function Paperless:showDocActions(doc, menu)
+function Paperless:showDocActions(doc, menu, return_info)
     local dialog
     local path = self:localPath(doc.id)
     dialog = ButtonDialog:new{
@@ -664,7 +743,7 @@ function Paperless:showDocActions(doc, menu)
                 callback = function()
                     UIManager:close(dialog)
                     self:downloadDocument(doc, function(downloaded)
-                        self:openFile(downloaded)
+                        self:openFile(downloaded, return_info)
                     end)
                 end,
             }},
@@ -706,7 +785,7 @@ function Paperless:showDocActions(doc, menu)
     UIManager:show(dialog)
 end
 
-function Paperless:showDownloaded()
+function Paperless:showDownloaded(focus)
     local dir = self:getDownloadDir()
     local files = {}
     for entry in lfs.dir(dir) do
@@ -723,11 +802,14 @@ function Paperless:showDownloaded()
         return
     end
     table.sort(files, function(a, b) return a.mtime > b.mtime end)
-    self:showMenu(_("Downloaded documents"), files, {
+    local dl_menu = self:showMenu(_("Downloaded documents"), files, {
         select = function(menu, item)
-            self:openFile(item.path)
+            self:openFile(item.path, { kind = "downloaded", focus = itemIndex(menu, item) })
         end,
     })
+    if focus and focus > 1 then
+        dl_menu:switchItemTable(nil, files, math.min(focus, #files))
+    end
 end
 
 ---------------------------------------------------------------------------
@@ -900,6 +982,14 @@ function Paperless:settingsItems(refresh)
                         refresh()
                     end,
                 })
+            end,
+        },
+        {
+            text = _("Return to the list after closing a document"),
+            mandatory = self:get("return_to_list", true) and _("on") or _("off"),
+            action = function()
+                self:set("return_to_list", not self:get("return_to_list", true))
+                refresh()
             end,
         },
         {

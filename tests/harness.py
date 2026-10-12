@@ -187,7 +187,7 @@ package.preload["ui/widget/spinwidget"] = function() return newWidget("spin") en
 package.preload["ui/widget/menu"] = function()
     return { new = function(self, args)
         args.kind = "menu"
-        args.switchItemTable = function(m, title, items, n) if title then m.title = title end; m.item_table = items end
+        args.switchItemTable = function(m, title, items, n) if title then m.title = title end; m.item_table = items; m.focus = n end
         return args
     end }
 end
@@ -209,8 +209,10 @@ package.preload["dispatcher"] = function() return { registerAction = function() 
 package.preload["datastorage"] = function() return { getSettingsDir = function() return WORK end } end
 package.preload["luasettings"] = function()
     local LS = {}
+    local store = {}  -- persists per path across opens, like the real file-backed LuaSettings
     function LS:open(path)
-        return setmetatable({ data = {}, path = path }, { __index = {
+        store[path] = store[path] or {}
+        return setmetatable({ data = store[path], path = path }, { __index = {
             readSetting = function(s, k) return s.data[k] end,
             saveSetting = function(s, k, v) s.data[k] = v end,
             flush = function() end,
@@ -481,6 +483,66 @@ check(errorText(function() p:downloadDocument({ id = 42, title = "t" }) end):fin
 check(py_stat(WORK .. "/dl/.paperless-42.part") == nil, "no .part left after failed download")
 p:set("token", "tok")
 check(errorText(function() p:downloadDocument({ id = 404, title = "t" }) end):find("404"), "404 on download")
+
+-- ---- return to list after closing a document --------------------------------------------------
+local LASTFILE = nil
+local real_read = G_reader_settings.readSetting
+G_reader_settings.readSetting = function(self, k) if k == "lastfile" then return LASTFILE end; return real_read(self, k) end
+p:set("page_size", 2)
+shown = {}
+p:showRecent()
+local rlist = lastShown()
+selectItem(rlist, findItem(rlist, "Load more… (1 left)"))
+check(#rlist.item_table == 3, "loaded all 3 docs before opening")
+opened = nil
+selectItem(rlist, rlist.item_table[3])
+check(opened ~= nil, "document opened from list")
+-- leaving the document: KOReader creates a new file-manager plugin instance
+LASTFILE = opened
+shown = {}
+py_clear_requests()
+local fm = Paperless:new{ ui = { menu = { registerToMainMenu = function() end }, openFile = function(self, f) opened = f end } }
+check(#shown >= 2 and shown[1].title == "Paperless-ngx", "home reopened under the list")
+local back = lastShown()
+check(back.kind == "menu" and back.title:find("^Recently added") and #back.item_table == 3, "same list reopened with same number of docs loaded: " .. tostring(back.title) .. " " .. tostring(back.item_table and #back.item_table))
+check(back.focus == 3, "focus restored to opened document: " .. tostring(back.focus))
+-- pending is consumed: a second file-manager instance does nothing
+shown = {}
+Paperless:new{ ui = { menu = { registerToMainMenu = function() end }, openFile = function(self, f) opened = f end } }
+check(#shown == 0, "restore happens only once")
+-- a different last file (user opened something else) -> no restore
+selectItem(back, back.item_table[1])
+LASTFILE = "/somewhere/else.epub"
+shown = {}
+Paperless:new{ ui = { menu = { registerToMainMenu = function() end }, openFile = function(self, f) opened = f end } }
+check(#shown == 0, "no restore when another document was read last")
+-- reader instance (has a document) never restores and keeps pending
+selectItem(back, back.item_table[2])
+LASTFILE = opened
+shown = {}
+Paperless:new{ ui = { document = {}, menu = { registerToMainMenu = function() end }, switchDocument = function(self, f) opened = f end } }
+check(#shown == 0, "reader instance does not restore")
+Paperless:new{ ui = { menu = { registerToMainMenu = function() end }, openFile = function(self, f) opened = f end } }
+check(#shown >= 2, "restore after reader -> file manager")
+-- setting off -> no restore
+selectItem(lastShown(), lastShown().item_table[1])
+LASTFILE = opened
+p:set("return_to_list", false)
+shown = {}
+Paperless:new{ ui = { menu = { registerToMainMenu = function() end }, openFile = function(self, f) opened = f end } }
+check(#shown == 0, "setting off disables return")
+p:set("return_to_list", true)
+-- downloaded list also returns
+shown = {}
+p:showDownloaded()
+local dlm = lastShown()
+selectItem(dlm, dlm.item_table[2])
+LASTFILE = opened
+shown = {}
+Paperless:new{ ui = { menu = { registerToMainMenu = function() end }, openFile = function(self, f) opened = f end } }
+check(lastShown() and lastShown().title == "Downloaded documents" and lastShown().focus == 2, "downloaded list reopened with focus")
+G_reader_settings.readSetting = real_read
+p:set("page_size", 50)
 
 -- ---- security ----------------------------------------------------------------------------------------------
 py_clear_requests()

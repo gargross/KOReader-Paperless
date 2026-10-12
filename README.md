@@ -6,6 +6,7 @@ A [KOReader](https://github.com/koreader/koreader) plugin for browsing, searchin
 - Recently added, browse by tag, full-text search, and paged lists ("Load more…").
 - Tap a document to download and open it; long-press for more actions (re-download, download only, delete local copy, details).
 - Downloaded documents are cached in `documents/Paperless` and can be read offline.
+- Closing a document opened from Paperless returns you to the list you came from, with the same search, tag or list, scrolled back to that document. This can be turned off in Settings.
 - Verified HTTPS: the certificate chain and hostname are checked against a bundled CA store, and redirects are never followed (see [SECURITY.md](SECURITY.md)).
 - Optional Cloudflare Access service-token headers, for servers published through Cloudflare Zero Trust.
 
@@ -52,6 +53,10 @@ Open **Paperless-ngx → Settings**:
 
 Windows tip: turn on *View → Show → File name extensions*, so Notepad can't silently save `paperless.lua.txt`.
 
+### Getting back to the list
+
+While reading, go back to KOReader's file browser the usual way (top menu → file-browser/home icon, or a gesture you've assigned to it). Paperless reopens on the list you came from. It reloads the list from the server, so Wi-Fi needs to be on. Disable this with *Settings → Return to the list after closing a document*.
+
 ### Quick access
 
 Assign a gesture: gear tab → **Taps and gestures** → **Gesture manager** → pick a gesture → **General** → **Paperless-ngx**.
@@ -83,7 +88,7 @@ paperless.koplugin/
   tls.lua       verified TLS (chain + hostname) for LuaSocket
   cacert.pem    Mozilla CA bundle (from certifi)
 tests/
-  harness.py            87 checks: KOReader UI and Paperless API stubbed (pip install lupa)
+  harness.py            98 checks: KOReader UI and Paperless API stubbed (pip install lupa)
   run_tls_tests.sh      real LuaSec against local HTTPS servers (trusted / self-signed / wrong host / redirect)
   tls_integration.lua, tls_server.py
 examples/paperless.lua.example
