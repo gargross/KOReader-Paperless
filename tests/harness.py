@@ -544,6 +544,24 @@ check(lastShown() and lastShown().title == "Downloaded documents" and lastShown(
 G_reader_settings.readSetting = real_read
 p:set("page_size", 50)
 
+-- ---- home-screen autostart marker -------------------------------------------------------------
+local marker = WORK .. "/paperless.autostart"
+local function writeMarker(t) local f = io.open(marker, "w"); f:write(tostring(t) .. "\n"); f:close() end
+writeMarker(os.time())
+check(p:consumeAutostart(marker) == true, "fresh marker opens Paperless")
+check(io.open(marker, "r") == nil, "marker removed after use")
+check(p:consumeAutostart(marker) == false, "no marker -> normal start")
+writeMarker(os.time() - 3600)
+check(p:consumeAutostart(marker) == false and io.open(marker, "r") == nil, "stale marker ignored and removed")
+writeMarker("garbage")
+check(p:consumeAutostart(marker) == false, "malformed marker ignored")
+-- end to end through init with the real marker path the scriptlet writes
+local real = io.open("/tmp/paperless.autostart", "w"); real:write(os.time() .. "\n"); real:close()
+shown = {}
+Paperless:new{ ui = { menu = { registerToMainMenu = function() end }, openFile = function() end } }
+check(#shown == 1 and shown[1].title == "Paperless-ngx", "scriptlet marker opens Paperless home on startup")
+check(io.open("/tmp/paperless.autostart", "r") == nil, "scriptlet marker consumed")
+
 -- ---- security ----------------------------------------------------------------------------------------------
 py_clear_requests()
 p:showRecent()

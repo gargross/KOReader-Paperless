@@ -53,6 +53,12 @@ Open **Paperless-ngx → Settings**:
 
 Windows tip: turn on *View → Show → File name extensions*, so Notepad can't silently save `paperless.lua.txt`.
 
+### Home-screen icon
+
+Copy [`scriptlet/Paperless.sh`](scriptlet/Paperless.sh) into the Kindle's `documents` folder. A **Paperless** item appears in the Kindle library next to KOReader's. Tapping it launches KOReader, the same way KOReader's own icon does (`kpm launch koreader`), and opens the Paperless menu directly.
+
+How it works: the scriptlet writes a timestamp to `/tmp/paperless.autostart` before launching KOReader, and the plugin consumes it at startup. Markers older than two minutes are ignored, so a failed launch can't hijack a later normal start. Requires KOReader installed through KPM (the scriptlet calls `/var/local/kmc/bin/kpm`).
+
 ### Getting back to the list
 
 While reading, go back to KOReader's file browser the usual way (top menu → file-browser/home icon, or a gesture you've assigned to it). Paperless reopens on the list you came from. It reloads the list from the server, so Wi-Fi needs to be on. Disable this with *Settings → Return to the list after closing a document*.
@@ -88,10 +94,11 @@ paperless.koplugin/
   tls.lua       verified TLS (chain + hostname) for LuaSocket
   cacert.pem    Mozilla CA bundle (from certifi)
 tests/
-  harness.py            98 checks: KOReader UI and Paperless API stubbed (pip install lupa)
+  harness.py            105 checks: KOReader UI and Paperless API stubbed (pip install lupa)
   run_tls_tests.sh      real LuaSec against local HTTPS servers (trusted / self-signed / wrong host / redirect)
   tls_integration.lua, tls_server.py
 examples/paperless.lua.example
+scriptlet/Paperless.sh        home-screen launcher (icon embedded; source PNG alongside)
 ```
 
 Run the tests:

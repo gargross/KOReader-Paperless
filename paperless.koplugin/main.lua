@@ -44,6 +44,9 @@ local BUNDLED_CA = PLUGIN_DIR .. "/cacert.pem"
 
 local DEFAULT_PAGE_SIZE = 50
 local MAX_RESTORE_DOCS = 300
+-- Written by the "Paperless" home-screen scriptlet just before it launches KOReader.
+local AUTOSTART_FILE = "/tmp/paperless.autostart"
+local AUTOSTART_MAX_AGE = 120 -- seconds; ignore stale markers from failed launches
 
 -- Module-level, so it survives KOReader switching between the reader and the
 -- file manager (plugin modules are loaded once; instances are recreated per UI).
@@ -82,6 +85,14 @@ function Paperless:init()
     self.menus = {}
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
+    -- Launched from the Paperless home-screen icon: open the menu straight away.
+    if self:consumeAutostart() then
+        session.pending = nil
+        UIManager:nextTick(function()
+            self:showHome()
+        end)
+        return
+    end
     -- Back in the file manager after reading a document opened from Paperless:
     -- reopen the list it came from.
     if not self.ui.document and session.pending then
@@ -94,6 +105,19 @@ function Paperless:init()
             end)
         end
     end
+end
+
+-- Returns true (once) if a fresh autostart marker exists; always removes it.
+function Paperless:consumeAutostart(path)
+    path = path or AUTOSTART_FILE
+    local fh = io.open(path, "r")
+    if not fh then
+        return false
+    end
+    local stamp = tonumber((fh:read("*l") or ""):match("%d+"))
+    fh:close()
+    os.remove(path)
+    return stamp ~= nil and math.abs(os.time() - stamp) <= AUTOSTART_MAX_AGE
 end
 
 function Paperless:restoreLocation(loc)
