@@ -98,6 +98,19 @@ def py_request(opts):
         payload = {"count": len(DOCS), "next": "http://x/?page=%d" % (page + 1) if more else None,
                    "previous": None, "results": chunk}
         return reply(200, json.dumps(payload).encode(), {"content-type": "application/json"})
+    if parsed.path == "/api/tags/" and state["mode"] == "nested":
+        state["tag_urls"].append(url)
+        payload = {"count": 9, "next": None, "previous": None, "results": [
+            {"id": 10, "name": "Recipe", "parent": None, "document_count": 9},
+            {"id": 1, "name": "Bills", "parent": None, "document_count": 2},
+            {"id": 11, "name": "Course", "parent": 10, "document_count": 6},
+            {"id": 12, "name": "Cuisine", "parent": 10, "document_count": 5},
+            {"id": 21, "name": "Soup", "parent": 11, "document_count": 1},
+            {"id": 20, "name": "Main", "parent": 11, "document_count": 3},
+            {"id": 30, "name": "Italian", "parent": 12, "document_count": 2},
+            {"id": 40, "name": "Orphan", "parent": 999, "document_count": 1},
+            {"id": 2, "name": "tax", "parent": None, "document_count": 1}]}
+        return reply(200, json.dumps(payload).encode(), {"content-type": "application/json"})
     if parsed.path == "/api/tags/":
         payload = {"count": 2, "next": None, "previous": None, "results": [
             {"id": 1, "name": "Bills", "document_count": 2},
@@ -144,6 +157,8 @@ g.PLUGIN_DIR = plugin_dir
 g.py_requests = lambda: to_lua(state["requests"])
 g.py_clear_requests = lambda: state["requests"].clear()
 g.py_set_mode = lambda m: state.__setitem__("mode", m)
+state.setdefault("tag_urls", [])
+g.py_tag_urls = lambda: to_lua(state["tag_urls"])
 
 LUA_TEST = r'''
 local results = { pass = 0, fail = 0 }
@@ -444,6 +459,52 @@ check(reqs()[1].url:find("/api/tags/?ordering=name", 1, true), "tags URL")
 py_clear_requests()
 selectItem(tags, tags.item_table[1])
 check(reqs()[1].url:find("tags__id__all=1", 1, true) and reqs()[1].url:find("ordering=-created", 1, true), "tag filter query")
+
+-- ---- nested tags (Paperless-ngx >= 2.19) ------------------------------------------------------------
+py_set_mode("nested")
+shown = {}
+p:showTags()
+local root = lastShown()
+local function texts(m) local t = {}; for i, it in ipairs(m.item_table) do t[i] = it.text .. "|" .. tostring(it.mandatory) end; return table.concat(t, ", ") end
+check(texts(root) == "Bills|2, Orphan|1, Recipe|2 tags \u{203A}, tax|1", "top level: roots only, sorted, parents show sub-tag count: " .. texts(root))
+check(root.subtitle == "Tags" and root.title == "Tags", "root breadcrumb")
+check(py_tag_urls()[1]:find("/api/tags/?ordering=name&page_size=100&page=1", 1, true) ~= nil, "tags URL (paged)")
+selectItem(root, findItem(root, "Recipe"))
+local recipe = lastShown()
+check(texts(recipe) == "All Recipe documents|9, Course|2 tags \u{203A}, Cuisine|1 tag \u{203A}", "recipe level: " .. texts(recipe))
+check(recipe.item_table[1].bold == true and recipe.subtitle == "Tags \u{203A} Recipe" and recipe.title_bar_left_icon == "chevron.left", "recipe: bold All row, breadcrumb, back arrow")
+selectItem(recipe, findItem(recipe, "Course"))
+local course = lastShown()
+check(texts(course) == "All Course documents|6, Main|3, Soup|1", "course level: " .. texts(course))
+py_clear_requests()
+selectItem(course, findItem(course, "Main"))
+local mainlist = lastShown()
+check(reqs()[1].url:find("tags__id__all=20", 1, true) ~= nil, "leaf opens its documents")
+check(mainlist.kind == "menu" and mainlist.subtitle == "Tags \u{203A} Recipe \u{203A} Course \u{203A} Main", "doc list breadcrumb: " .. tostring(mainlist.subtitle))
+-- back arrow closes one level; X closes everything
+local depth = #p.menus
+mainlist:onLeftButtonTap()
+check(#p.menus == depth - 1 and p.menus[#p.menus] == course, "back arrow returns to Course")
+py_clear_requests()
+selectItem(course, course.item_table[1])
+check(reqs()[1].url:find("tags__id__all=11", 1, true) ~= nil, "All Course documents filters by the parent tag")
+lastShown().close_callback()
+check(#p.menus == 0, "X leaves Paperless entirely")
+-- return to the list rebuilds the tag levels above it
+shown = {}
+p:showTags(); selectItem(lastShown(), findItem(lastShown(), "Recipe")); selectItem(lastShown(), findItem(lastShown(), "Course")); selectItem(lastShown(), findItem(lastShown(), "Main"))
+local ml = lastShown()
+opened = nil
+selectItem(ml, ml.item_table[2])
+local saved_rs = G_reader_settings.readSetting
+G_reader_settings.readSetting = function(self, k) if k == "lastfile" then return opened end; return saved_rs(self, k) end
+shown = {}
+Paperless:new{ ui = { menu = { registerToMainMenu = function() end }, openFile = function(self, f) opened = f end } }
+local seq = {}; for i, w in ipairs(shown) do if w.kind == "menu" then seq[#seq + 1] = w.title end end
+check(table.concat(seq, " > "):find("^Paperless%-ngx > Tags > Recipe > Course > Main") ~= nil, "restore rebuilds tag levels: " .. table.concat(seq, " > "))
+check(lastShown().focus == 2, "restored list focused on opened document")
+G_reader_settings.readSetting = saved_rs
+py_set_mode("ok")
 
 -- ---- search -----------------------------------------------------------------------------------------
 shown = {}

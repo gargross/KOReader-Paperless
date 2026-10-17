@@ -3,7 +3,9 @@
 A [KOReader](https://github.com/koreader/koreader) plugin for browsing, searching and downloading documents from a [Paperless-ngx](https://docs.paperless-ngx.com/) server. Documents open directly in KOReader. It was built for and tested on a jailbroken 2022 Kindle Scribe, and should work on any device that runs KOReader.
 
 **Features**
-- Recently added, browse by tag, full-text search, and paged lists ("Load more…").
+- Recently added, full-text search, and paged lists ("Load more…").
+- Browse by tag, including nested tags (Paperless-ngx 2.19+). Tags drill down like folders, with a breadcrumb (Tags › Recipe › Course) and a back arrow. Each parent level starts with "All *Recipe* documents"; Paperless adds parent tags automatically, so that list covers everything underneath. Older servers just show a flat tag list.
+- Navigation: the back arrow goes up one level, and ✕ leaves Paperless.
 - Tap a document to download and open it; long-press for more actions (re-download, download only, delete local copy, details).
 - Downloaded documents are cached in `documents/Paperless` and can be read offline.
 - Closing a document opened from Paperless returns you to the list you came from, with the same search, tag or list, scrolled back to that document. This can be turned off in Settings.
@@ -94,7 +96,7 @@ paperless.koplugin/
   tls.lua       verified TLS (chain + hostname) for LuaSocket
   cacert.pem    Mozilla CA bundle (from certifi)
 tests/
-  harness.py            105 checks: KOReader UI and Paperless API stubbed (pip install lupa)
+  harness.py            118 checks: KOReader UI and Paperless API stubbed (pip install lupa)
   run_tls_tests.sh      real LuaSec against local HTTPS servers (trusted / self-signed / wrong host / redirect)
   tls_integration.lua, tls_server.py
 examples/paperless.lua.example

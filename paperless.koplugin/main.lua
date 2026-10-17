@@ -54,6 +54,8 @@ local AUTOSTART_MAX_AGE = 120 -- seconds; ignore stale markers from failed launc
 -- the user leaves that document.
 local session = { pending = nil }
 
+local buildTagTree -- defined with the tag browser below
+
 local function samePath(a, b)
     if not a or not b then
         return false
@@ -122,7 +124,25 @@ end
 
 function Paperless:restoreLocation(loc)
     self:showHome()
-    if loc.kind == "docs" then
+    if loc.kind == "docs" and loc.tag_path and #loc.tag_path > 0 then
+        -- Rebuild the tag levels above the list so Back walks up the tree again.
+        NetworkMgr:runWhenConnected(function()
+            local tags = self:fetchAllTags()
+            if tags then
+                self.tag_tree = buildTagTree(tags)
+                self:showTagLevel(nil, {})
+                local prefix = {}
+                for _i, id in ipairs(loc.tag_path) do
+                    prefix[#prefix + 1] = id
+                    local kids = self.tag_tree.children[id]
+                    if self.tag_tree.by_id[id] and kids and #kids > 0 then
+                        self:showTagLevel(id, { unpack(prefix) })
+                    end
+                end
+            end
+            self:showDocumentList(loc.title, loc.params, { count = loc.count, focus = loc.focus }, loc.tag_path)
+        end)
+    elseif loc.kind == "docs" then
         self:showDocumentList(loc.title, loc.params, { count = loc.count, focus = loc.focus })
     elseif loc.kind == "downloaded" then
         self:showDownloaded(loc.focus)
@@ -380,10 +400,18 @@ end
 -- Menus
 ---------------------------------------------------------------------------
 
-function Paperless:showMenu(title, items, handlers)
+-- opts.subtitle: breadcrumb line; opts.back: show a back arrow (closes only
+-- this level). The X button always leaves Paperless (closes every level).
+function Paperless:showMenu(title, items, handlers, opts)
+    opts = opts or {}
     local menu
     menu = Menu:new{
         title = title,
+        subtitle = opts.subtitle,
+        title_bar_left_icon = opts.back and "chevron.left" or nil,
+        onLeftButtonTap = opts.back and function()
+            self:closeMenu(menu)
+        end or nil,
         item_table = items,
         covers_fullscreen = true,
         is_borderless = true,
@@ -404,17 +432,25 @@ function Paperless:showMenu(title, items, handlers)
             return true
         end,
         close_callback = function()
-            for i = #self.menus, 1, -1 do
-                if self.menus[i] == menu then
-                    table.remove(self.menus, i)
-                end
+            if opts.back then
+                self:closeAllMenus()
+            else
+                self:closeMenu(menu)
             end
-            UIManager:close(menu)
         end,
     }
     table.insert(self.menus, menu)
     UIManager:show(menu)
     return menu
+end
+
+function Paperless:closeMenu(menu)
+    for i = #self.menus, 1, -1 do
+        if self.menus[i] == menu then
+            table.remove(self.menus, i)
+        end
+    end
+    UIManager:close(menu)
 end
 
 function Paperless:closeAllMenus()
@@ -469,44 +505,127 @@ function Paperless:showSearchDialog()
     dialog:onShowKeyboard()
 end
 
+-- All tags, following pagination. Returns list or nil + error.
+function Paperless:fetchAllTags()
+    local tags = {}
+    for page = 1, 20 do
+        local data, err = self:apiGet("/api/tags/?ordering=name&page_size=100&page=" .. page)
+        if not data then
+            return nil, err
+        end
+        local results = data.results or {}
+        for _i, tag in ipairs(results) do
+            if tonumber(tag.id) then
+                tags[#tags + 1] = tag
+            end
+        end
+        if type(data.next) ~= "string" or #results == 0 then
+            break
+        end
+    end
+    return tags
+end
+
+-- Builds { by_id = {id -> tag}, children = {parent id | "root" -> sorted tags} }.
+-- Paperless-ngx >= 2.19 sends `parent`; older servers don't, so every tag is
+-- top-level. A tag whose parent isn't visible to this user is shown at the top.
+function buildTagTree(tags)
+    local by_id, children = {}, {}
+    for _i, tag in ipairs(tags) do
+        by_id[tag.id] = tag
+    end
+    for _i, tag in ipairs(tags) do
+        local parent = tonumber(tag.parent)
+        local key = (parent and by_id[parent] and parent ~= tag.id) and parent or "root"
+        children[key] = children[key] or {}
+        table.insert(children[key], tag)
+    end
+    for _i, list in pairs(children) do
+        table.sort(list, function(a, b)
+            return tostring(a.name or ""):lower() < tostring(b.name or ""):lower()
+        end)
+    end
+    return { by_id = by_id, children = children }
+end
+
+local function tagName(tag)
+    return (type(tag.name) == "string" and tag.name ~= "") and tag.name or ("#" .. tostring(tag.id))
+end
+
+local function tagCount(tag)
+    return tag.document_count ~= nil and tostring(tag.document_count) or ""
+end
+
+-- "Tags › Recipe › Course › Main" for a document list reached through tags.
+function Paperless:tagCrumbs(path)
+    if not path or #path == 0 or not self.tag_tree then
+        return nil
+    end
+    local crumbs = { _("Tags") }
+    for _i, id in ipairs(path) do
+        local tag = self.tag_tree.by_id[id]
+        crumbs[#crumbs + 1] = tag and tagName(tag) or ("#" .. tostring(id))
+    end
+    return table.concat(crumbs, " \u{203A} ")
+end
+
 function Paperless:showTags()
     NetworkMgr:runWhenConnected(function()
-        local items = {}
-        local page = 1
-        while page <= 20 do
-            local data, err = self:apiGet("/api/tags/?ordering=name&page_size=100&page=" .. page)
-            if not data then
-                self:showError(err)
-                return
-            end
-            local results = data.results or {}
-            for i, tag in ipairs(results) do
-                items[#items + 1] = {
-                    text = tag.name or ("#" .. tostring(tag.id)),
-                    mandatory = tag.document_count and tostring(tag.document_count) or "",
-                    tag = tag,
-                }
-            end
-            if type(data.next) ~= "string" or #results == 0 then
-                break
-            end
-            page = page + 1
+        local tags, err = self:fetchAllTags()
+        if not tags then
+            self:showError(err)
+            return
         end
-        if #items == 0 then
+        if #tags == 0 then
             UIManager:show(InfoMessage:new{ text = _("No tags found.") })
             return
         end
-        self:showMenu(_("Tags"), items, {
-            select = function(menu, item)
-                if item.tag then
-                    self:showDocumentList(item.tag.name, {
-                        "tags__id__all=" .. tostring(item.tag.id),
-                        "ordering=-created",
-                    })
-                end
-            end,
-        })
+        self.tag_tree = buildTagTree(tags)
+        self:showTagLevel(nil, {})
     end)
+end
+
+-- One level of the tag tree. path = ids from the top down to parent_id.
+function Paperless:showTagLevel(parent_id, path)
+    local tree = self.tag_tree
+    local node = parent_id and tree.by_id[parent_id]
+    local crumbs = { _("Tags") }
+    for _i, id in ipairs(path) do
+        crumbs[#crumbs + 1] = tagName(tree.by_id[id])
+    end
+    local items = {}
+    if node then
+        items[1] = { text = T(_("All %1 documents"), tagName(node)), mandatory = tagCount(node),
+                     bold = true, open_tag = node, path = path }
+    end
+    for _i, tag in ipairs(tree.children[parent_id or "root"] or {}) do
+        local kids = tree.children[tag.id]
+        local child_path = { unpack(path) }
+        child_path[#child_path + 1] = tag.id
+        if kids and #kids > 0 then
+            items[#items + 1] = { text = tagName(tag), mandatory = T(#kids == 1 and _("%1 tag \u{203A}") or _("%1 tags \u{203A}"), #kids),
+                                  drill_tag = tag, path = child_path }
+        else
+            items[#items + 1] = { text = tagName(tag), mandatory = tagCount(tag),
+                                  open_tag = tag, path = child_path }
+        end
+    end
+    return self:showMenu(node and tagName(node) or _("Tags"), items, {
+        select = function(menu, item)
+            if item.drill_tag then
+                self:showTagLevel(item.drill_tag.id, item.path)
+            elseif item.open_tag then
+                self:showTagDocuments(item.open_tag, item.path)
+            end
+        end,
+    }, { subtitle = table.concat(crumbs, " \u{203A} "), back = true })
+end
+
+function Paperless:showTagDocuments(tag, path, restore)
+    self:showDocumentList(tagName(tag), {
+        "tags__id__all=" .. tostring(tag.id),
+        "ordering=-created",
+    }, restore, path)
 end
 
 ---------------------------------------------------------------------------
@@ -527,7 +646,7 @@ function Paperless:docItem(doc)
     return { text = title, mandatory = mark .. created, doc = doc }
 end
 
-function Paperless:showDocumentList(title, params, restore)
+function Paperless:showDocumentList(title, params, restore, tag_path)
     NetworkMgr:runWhenConnected(function()
         local data, err = self:fetchDocuments(params, 1)
         if not data then
@@ -548,7 +667,7 @@ function Paperless:showDocumentList(title, params, restore)
             if #more_docs == 0 then
                 break
             end
-            for _, d in ipairs(more_docs) do
+            for _i, d in ipairs(more_docs) do
                 docs[#docs + 1] = d
             end
             state.page = state.page + 1
@@ -566,7 +685,7 @@ function Paperless:showDocumentList(title, params, restore)
             items[#items + 1] = moreItem()
         end
         local function returnInfo(menu, item)
-            return { kind = "docs", title = title, params = params,
+            return { kind = "docs", title = title, params = params, tag_path = tag_path,
                      count = state.loaded, focus = itemIndex(menu, item) }
         end
         local list_menu = self:showMenu(menu_title, items, {
@@ -582,7 +701,7 @@ function Paperless:showDocumentList(title, params, restore)
                     self:showDocActions(item.doc, menu, returnInfo(menu, item))
                 end
             end,
-        })
+        }, { back = true, subtitle = self:tagCrumbs(tag_path) })
         if restore and restore.focus and restore.focus > 1 then
             list_menu:switchItemTable(nil, items, math.min(restore.focus, #items))
         end
@@ -830,7 +949,7 @@ function Paperless:showDownloaded(focus)
         select = function(menu, item)
             self:openFile(item.path, { kind = "downloaded", focus = itemIndex(menu, item) })
         end,
-    })
+    }, { back = true })
     if focus and focus > 1 then
         dl_menu:switchItemTable(nil, files, math.min(focus, #files))
     end
@@ -1034,7 +1153,7 @@ function Paperless:showSettings()
             menu:switchItemTable(nil, self:settingsItems(refresh), -1)
         end
     end
-    menu = self:showMenu(_("Paperless settings"), self:settingsItems(refresh), {})
+    menu = self:showMenu(_("Paperless settings"), self:settingsItems(refresh), {}, { back = true })
 end
 
 return Paperless
