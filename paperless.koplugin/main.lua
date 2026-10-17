@@ -124,7 +124,7 @@ end
 
 function Paperless:restoreLocation(loc)
     self:showHome()
-    if loc.kind == "docs" and loc.tag_path and #loc.tag_path > 0 then
+    if (loc.kind == "docs" or loc.kind == "taglevel") and loc.tag_path and #loc.tag_path > 0 then
         -- Rebuild the tag levels above the list so Back walks up the tree again.
         NetworkMgr:runWhenConnected(function()
             local tags = self:fetchAllTags()
@@ -132,15 +132,19 @@ function Paperless:restoreLocation(loc)
                 self.tag_tree = buildTagTree(tags)
                 self:showTagLevel(nil, {})
                 local prefix = {}
-                for _i, id in ipairs(loc.tag_path) do
+                for i, id in ipairs(loc.tag_path) do
                     prefix[#prefix + 1] = id
                     local kids = self.tag_tree.children[id]
                     if self.tag_tree.by_id[id] and kids and #kids > 0 then
-                        self:showTagLevel(id, { unpack(prefix) })
+                        local is_target = loc.kind == "taglevel" and i == #loc.tag_path
+                        self:showTagLevel(id, { unpack(prefix) },
+                            is_target and { count = loc.count, focus = loc.focus } or nil)
                     end
                 end
             end
-            self:showDocumentList(loc.title, loc.params, { count = loc.count, focus = loc.focus }, loc.tag_path)
+            if loc.kind == "docs" then
+                self:showDocumentList(loc.title, loc.params, { count = loc.count, focus = loc.focus }, loc.tag_path)
+            end
         end)
     elseif loc.kind == "docs" then
         self:showDocumentList(loc.title, loc.params, { count = loc.count, focus = loc.focus })
@@ -585,8 +589,21 @@ function Paperless:showTags()
     end)
 end
 
+-- Every tag id below `id` (children, grandchildren, ...).
+local function descendantIds(tree, id, out)
+    out = out or {}
+    for _i, child in ipairs(tree.children[id] or {}) do
+        out[#out + 1] = child.id
+        descendantIds(tree, child.id, out)
+    end
+    return out
+end
+
 -- One level of the tag tree. path = ids from the top down to parent_id.
-function Paperless:showTagLevel(parent_id, path)
+-- Below a parent's sub-tags it lists documents tagged with the parent itself
+-- but with none of its sub-tags, like files under folders.
+-- restore = { count, focus } when returning from a document.
+function Paperless:showTagLevel(parent_id, path, restore)
     local tree = self.tag_tree
     local node = parent_id and tree.by_id[parent_id]
     local crumbs = { _("Tags") }
@@ -610,15 +627,71 @@ function Paperless:showTagLevel(parent_id, path)
                                   open_tag = tag, path = child_path }
         end
     end
-    return self:showMenu(node and tagName(node) or _("Tags"), items, {
+
+    local title = node and tagName(node) or _("Tags")
+    local loose_params, state, moreItem
+    if node then
+        loose_params = {
+            "tags__id__all=" .. tostring(node.id),
+            "tags__id__none=" .. table.concat(descendantIds(tree, node.id), ","),
+            "ordering=-created",
+        }
+        local data = self:fetchDocuments(loose_params, 1)
+        local docs = data and data.results or {}
+        if #docs > 0 then
+            state = { page = 1, loaded = #docs, total = tonumber(data.count) or #docs }
+            local want = restore and math.min(tonumber(restore.count) or 0, MAX_RESTORE_DOCS) or 0
+            while state.loaded < want and state.loaded < state.total do
+                local more = self:fetchDocuments(loose_params, state.page + 1)
+                local more_docs = more and more.results or {}
+                if #more_docs == 0 then
+                    break
+                end
+                for _i, d in ipairs(more_docs) do
+                    docs[#docs + 1] = d
+                end
+                state.page = state.page + 1
+                state.loaded = state.loaded + #more_docs
+            end
+            items[#items].separator = true
+            for _i, doc in ipairs(docs) do
+                items[#items + 1] = self:docItem(doc)
+            end
+            moreItem = function()
+                return { text = T(_("Load more… (%1 left)"), state.total - state.loaded), is_more = true }
+            end
+            if state.loaded < state.total then
+                items[#items + 1] = moreItem()
+            end
+        end
+    end
+
+    local function returnInfo(menu, item)
+        return { kind = "taglevel", tag_path = path, count = state and state.loaded or 0,
+                 focus = itemIndex(menu, item) }
+    end
+    local level_menu = self:showMenu(title, items, {
         select = function(menu, item)
             if item.drill_tag then
                 self:showTagLevel(item.drill_tag.id, item.path)
             elseif item.open_tag then
                 self:showTagDocuments(item.open_tag, item.path)
+            elseif item.is_more then
+                self:loadMore(menu, title, loose_params, state, moreItem)
+            elseif item.doc then
+                self:openDocument(item.doc, returnInfo(menu, item))
+            end
+        end,
+        hold = function(menu, item)
+            if item.doc then
+                self:showDocActions(item.doc, menu, returnInfo(menu, item))
             end
         end,
     }, { subtitle = table.concat(crumbs, " \u{203A} "), back = true })
+    if restore and restore.focus and restore.focus > 1 then
+        level_menu:switchItemTable(nil, items, math.min(restore.focus, #items))
+    end
+    return level_menu
 end
 
 function Paperless:showTagDocuments(tag, path, restore)

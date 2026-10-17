@@ -90,6 +90,17 @@ def py_request(opts):
         return reply(200, b"<html>cloudflare access login</html>", {"content-type": "text/html"})
     if headers.get("Authorization") != "Token tok":
         return reply(401, b'{"detail":"Invalid token."}')
+    if parsed.path == "/api/documents/" and "tags__id__none" in qs:
+        state["loose_qs"].append(qs)
+        loose = []
+        if qs.get("tags__id__all") == ["10"]:
+            loose = [{"id": 77, "title": "Grandma's chili", "created": "2026-01-02", "tags": [10]},
+                     {"id": 78, "title": "Bread notes", "created": "2026-01-01", "tags": [10]}]
+        page = int(qs.get("page", ["1"])[0])
+        size = int(qs.get("page_size", ["25"])[0])
+        chunk = loose[(page - 1) * size: page * size]
+        payload = {"count": len(loose), "next": None if page * size >= len(loose) else "x", "previous": None, "results": chunk}
+        return reply(200, json.dumps(payload).encode(), {"content-type": "application/json"})
     if parsed.path == "/api/documents/":
         page = int(qs.get("page", ["1"])[0])
         size = int(qs.get("page_size", ["25"])[0])
@@ -158,6 +169,8 @@ g.py_requests = lambda: to_lua(state["requests"])
 g.py_clear_requests = lambda: state["requests"].clear()
 g.py_set_mode = lambda m: state.__setitem__("mode", m)
 state.setdefault("tag_urls", [])
+state.setdefault("loose_qs", [])
+g.py_loose_qs = lambda: to_lua(state["loose_qs"])
 g.py_tag_urls = lambda: to_lua(state["tag_urls"])
 
 LUA_TEST = r'''
@@ -471,7 +484,10 @@ check(root.subtitle == "Tags" and root.title == "Tags", "root breadcrumb")
 check(py_tag_urls()[1]:find("/api/tags/?ordering=name&page_size=100&page=1", 1, true) ~= nil, "tags URL (paged)")
 selectItem(root, findItem(root, "Recipe"))
 local recipe = lastShown()
-check(texts(recipe) == "All Recipe documents|9, Course|2 tags \u{203A}, Cuisine|1 tag \u{203A}", "recipe level: " .. texts(recipe))
+check(texts(recipe) == "All Recipe documents|9, Course|2 tags \u{203A}, Cuisine|1 tag \u{203A}, Grandma's chili|2026-01-02, Bread notes|2026-01-01", "recipe level lists sub-tags then loose documents: " .. texts(recipe))
+local lq = py_loose_qs()[1]
+check(lq.tags__id__all[1] == "10" and lq.tags__id__none[1] == "11,20,21,12,30", "loose docs: tagged Recipe but none of its descendants: " .. tostring(lq.tags__id__none and lq.tags__id__none[1]))
+check(recipe.item_table[3].separator == true, "separator between sub-tags and documents")
 check(recipe.item_table[1].bold == true and recipe.subtitle == "Tags \u{203A} Recipe" and recipe.title_bar_left_icon == "chevron.left", "recipe: bold All row, breadcrumb, back arrow")
 selectItem(recipe, findItem(recipe, "Course"))
 local course = lastShown()
@@ -503,6 +519,19 @@ Paperless:new{ ui = { menu = { registerToMainMenu = function() end }, openFile =
 local seq = {}; for i, w in ipairs(shown) do if w.kind == "menu" then seq[#seq + 1] = w.title end end
 check(table.concat(seq, " > "):find("^Paperless%-ngx > Tags > Recipe > Course > Main") ~= nil, "restore rebuilds tag levels: " .. table.concat(seq, " > "))
 check(lastShown().focus == 2, "restored list focused on opened document")
+-- open a loose document from the Recipe level and come back to that level
+shown = {}
+p:closeAllMenus()
+p:showTags(); selectItem(lastShown(), findItem(lastShown(), "Recipe"))
+local rl = lastShown()
+opened = nil
+selectItem(rl, findItem(rl, "Bread notes"))
+check(opened ~= nil, "loose document opens")
+shown = {}
+Paperless:new{ ui = { menu = { registerToMainMenu = function() end }, openFile = function(self, f) opened = f end } }
+local seq2 = {}; for i, w in ipairs(shown) do if w.kind == "menu" then seq2[#seq2 + 1] = w.title end end
+check(table.concat(seq2, " > ") == "Paperless-ngx > Tags > Recipe", "returns to the Recipe level: " .. table.concat(seq2, " > "))
+check(lastShown().focus == 5, "focus on the loose document: " .. tostring(lastShown().focus))
 G_reader_settings.readSetting = saved_rs
 py_set_mode("ok")
 
